@@ -10,7 +10,7 @@ from loguru import logger
 from .config import CURRENT_YEAR, START_ISSUE, END_ISSUE
 from .storage import init_db, upsert_zodiac_map, upsert_number_attributes, bulk_upsert_draws
 from .scraper import fetch_zodiac_and_attrs, fetch_draws_for_year
-from .analysis import make_recommendation
+from .analysis import make_recommendation, accuracy_backtest_by_issue
 
 
 def cmd_fetch_meta(args):
@@ -31,6 +31,18 @@ def cmd_fetch_draws(args):
 def cmd_analyze(args):
     result = make_recommendation(args.year, args.start, args.end)
     logger.info("Recommendation summary:\n" + json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def cmd_backtest(args):
+    result = accuracy_backtest_by_issue(args.year, args.start, args.end, window=args.window)
+    # show compact view for requested segment
+    items = [r for r in result.get('details', []) if r['issue'] >= args.show_from]
+    logger.info(
+        "Backtest summary (avg_hits={:.3f}, count={}):\n{}".format(
+            result.get('avg_hits', 0.0), result.get('count', 0),
+            json.dumps(items, ensure_ascii=False, indent=2)
+        )
+    )
 
 
 def main():
@@ -55,6 +67,14 @@ def main():
     p_an.add_argument("--start", type=int, default=1)
     p_an.add_argument("--end", type=int, default=289)
     p_an.set_defaults(func=cmd_analyze)
+
+    p_bt = sub.add_parser("backtest")
+    p_bt.add_argument("--year", type=int, default=CURRENT_YEAR)
+    p_bt.add_argument("--start", type=int, default=1)
+    p_bt.add_argument("--end", type=int, default=289)
+    p_bt.add_argument("--window", type=int, default=50)
+    p_bt.add_argument("--show-from", dest="show_from", type=int, default=280)
+    p_bt.set_defaults(func=cmd_backtest)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

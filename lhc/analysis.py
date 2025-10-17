@@ -74,3 +74,38 @@ def make_recommendation(year: int = CURRENT_YEAR, start_issue: int = 1, end_issu
     }
     save_analysis_history(year, start_issue, end_issue, "frequency_hot_cold", json.dumps(summary, ensure_ascii=False))
     return summary
+
+
+def accuracy_backtest_by_issue(year: int, start_issue: int, end_issue: int, window: int = RECO_CONFIG.recent_window) -> Dict[str, object]:
+    """For each issue in [start_issue, end_issue], build recommendation using previous `window` issues,
+    then compute hit count versus actual numbers for that issue.
+    """
+    all_draws = load_draws(year, 1, end_issue)
+    issue_to_numbers = {iss: nums for _, iss, nums in all_draws}
+    results = []
+    for iss in range(start_issue, end_issue + 1):
+        prev_start = max(1, iss - window)
+        context = [(y, i, n) for (y, i, n) in all_draws if prev_start <= i <= iss - 1]
+        if len(context) == 0 or iss not in issue_to_numbers:
+            continue
+        freq = compute_frequencies(context)
+        hot, cold = hot_cold(freq)
+        reco = [n for n in hot if n not in set(cold)][:7]
+        actual = set(issue_to_numbers[iss])
+        hit = len(actual.intersection(reco))
+        results.append({
+            "issue": iss,
+            "recommended": reco,
+            "actual": list(issue_to_numbers[iss]),
+            "hits": hit,
+        })
+    summary = {
+        "year": year,
+        "range": [start_issue, end_issue],
+        "window": window,
+        "avg_hits": (sum(r["hits"] for r in results) / max(len(results), 1)) if results else 0.0,
+        "count": len(results),
+        "details": results,
+    }
+    save_analysis_history(year, start_issue, end_issue, "backtest_range", json.dumps(summary, ensure_ascii=False))
+    return summary

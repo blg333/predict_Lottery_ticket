@@ -10,7 +10,7 @@ from loguru import logger
 from .config import CURRENT_YEAR, START_ISSUE, END_ISSUE
 from .storage import init_db, upsert_zodiac_map, upsert_number_attributes, bulk_upsert_draws
 from .scraper import fetch_zodiac_and_attrs, fetch_draws_for_year
-from .analysis import make_recommendation, accuracy_backtest_by_issue
+from .analysis import make_recommendation, accuracy_backtest_by_issue, optimize_grid
 
 
 def cmd_fetch_meta(args):
@@ -75,6 +75,23 @@ def main():
     p_bt.add_argument("--window", type=int, default=50)
     p_bt.add_argument("--show-from", dest="show_from", type=int, default=280)
     p_bt.set_defaults(func=cmd_backtest)
+
+    def cmd_optimize(args):
+        res = optimize_grid(
+            args.year, args.start, args.end,
+            windows=args.windows, prev_ks=args.prev_ks, decay_list=args.decays, weight_grid=None,
+        )
+        logger.info("Best config:\n" + json.dumps(res["config"], ensure_ascii=False, indent=2))
+        logger.info("Summary avg_hits={:.3f}, count={}".format(res["summary"].get("avg_hits", 0.0), res["summary"].get("count", 0)))
+
+    p_opt = sub.add_parser("optimize")
+    p_opt.add_argument("--year", type=int, default=CURRENT_YEAR)
+    p_opt.add_argument("--start", type=int, default=220)
+    p_opt.add_argument("--end", type=int, default=290)
+    p_opt.add_argument("--windows", type=int, nargs="*", default=[40,50,60])
+    p_opt.add_argument("--prev-ks", dest="prev_ks", type=int, nargs="*", default=[1,2,3])
+    p_opt.add_argument("--decays", type=float, nargs="*", default=[0.95,0.97,0.99])
+    p_opt.set_defaults(func=cmd_optimize)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

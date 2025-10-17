@@ -196,6 +196,84 @@ def backtest_tm_top1(records: List[IssueRecord]) -> float:
     return correct / total if total else 0.0
 
 
+def _last_occurrence_index(records: List[IssueRecord], is_tm: bool, number: int) -> Optional[int]:
+    # Return distance from end (1=last issue) where number last appeared; None if never
+    for idx, r in enumerate(reversed(sorted(records, key=lambda x: x.issue))):
+        if is_tm:
+            if r.numbers[6] == number:
+                return idx + 1
+        else:
+            if number in r.numbers[:6]:
+                return idx + 1
+    return None
+
+
+def frequency_balanced_tm_scores(records: List[IssueRecord], recent_boost_window: int = 20) -> List[Tuple[int, float]]:
+    # Balance by deficit from uniform expectation + recency boost
+    if not records:
+        return []
+    _, freq_tm = compute_frequency(records)
+    expected = len(records) / 49.0
+    # Normalize deficits and recency
+    scores: Dict[int, float] = {}
+    max_recency = 0
+    recencies: Dict[int, float] = {}
+    for n in range(1, 50):
+        d = expected - freq_tm[n]
+        deficit = max(0.0, d) / expected if expected > 0 else 0.0
+        dist = _last_occurrence_index(records, is_tm=True, number=n)
+        rec = recent_boost_window if dist is None else min(recent_boost_window, float(dist))
+        recencies[n] = rec
+        if rec > max_recency:
+            max_recency = rec
+        scores[n] = deficit  # initial
+    # Add normalized recency component
+    if max_recency > 0:
+        for n in range(1, 50):
+            scores[n] = 0.7 * scores[n] + 0.3 * (recencies[n] / max_recency)
+    ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+    return ranked
+
+
+def frequency_balanced_all_picks(records: List[IssueRecord], k: int = 6, recent_boost_window: int = 10) -> Tuple[List[int], List[Tuple[int, float]]]:
+    # Balance by deficit for 平码 slots across history; greedily pick top-k
+    if not records:
+        return [], []
+    freq_all, _ = compute_frequency(records)
+    expected = (len(records) * 6) / 49.0
+    scores: Dict[int, float] = {}
+    max_recency = 0
+    recencies: Dict[int, float] = {}
+    for n in range(1, 50):
+        d = expected - freq_all[n]
+        deficit = max(0.0, d) / expected if expected > 0 else 0.0
+        dist = _last_occurrence_index(records, is_tm=False, number=n)
+        rec = recent_boost_window if dist is None else min(recent_boost_window, float(dist))
+        recencies[n] = rec
+        if rec > max_recency:
+            max_recency = rec
+        scores[n] = deficit
+    if max_recency > 0:
+        for n in range(1, 50):
+            scores[n] = 0.7 * scores[n] + 0.3 * (recencies[n] / max_recency)
+    ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
+    picks = [n for n, _ in ranked[:k]]
+    return picks, ranked[:max(k, 10)]
+
+
+def cmd_balance(args):
+    records = read_csv(args.data)
+    ranked_tm = frequency_balanced_tm_scores(records, recent_boost_window=args.recent_tm)
+    tm_pred = ranked_tm[0][0] if ranked_tm else 0
+    picks, ranked_all = frequency_balanced_all_picks(records, k=args.k, recent_boost_window=args.recent_all)
+    last_issue = max(r.issue for r in records)
+    print("频率平衡预测")
+    print(f"数据期数范围: {records[0].issue}-{records[-1].issue}，总计{len(records)}期")
+    print(f"第{last_issue+1}期特碼(频率平衡)预测: {tm_pred}")
+    print(f"特碼候选Top10(频率平衡): {ranked_tm[:10]}")
+    print(f"平衡选取6个平码: {sorted(picks)}")
+    print(f"平码候选Top{max(10, args.k)}(频率平衡): {ranked_all}")
+
 def cmd_fetch(args):
     records = fetch_issues_2025(args.start, args.end)
     if not records or records[0].issue != args.start or records[-1].issue != args.end:
@@ -255,6 +333,13 @@ def build_arg_parser():
     pr = sub.add_parser("recommend", help="输出指定推荐")
     pr.add_argument("--data", type=str, default="data/macao_2025.csv")
     pr.set_defaults(func=cmd_recommend)
+
+    pb = sub.add_parser("balance", help="频率平衡预测（特码+平码）")
+    pb.add_argument("--data", type=str, default="data/macao_2025.csv")
+    pb.add_argument("--k", type=int, default=6, help="输出k个平衡平码")
+    pb.add_argument("--recent-tm", dest="recent_tm", type=int, default=20, help="特码近期窗口上限")
+    pb.add_argument("--recent-all", dest="recent_all", type=int, default=10, help="平码近期窗口上限")
+    pb.set_defaults(func=cmd_balance)
     return p
 
 

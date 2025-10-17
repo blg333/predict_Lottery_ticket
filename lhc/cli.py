@@ -10,7 +10,13 @@ from loguru import logger
 from .config import CURRENT_YEAR, START_ISSUE, END_ISSUE
 from .storage import init_db, upsert_zodiac_map, upsert_number_attributes, bulk_upsert_draws
 from .scraper import fetch_zodiac_and_attrs, fetch_draws_for_year
-from .analysis import make_recommendation, accuracy_backtest_by_issue, optimize_grid
+from .analysis import (
+    make_recommendation,
+    accuracy_backtest_by_issue,
+    optimize_grid,
+    predict_special_advanced,
+    optimize_special_grid,
+)
 
 
 def cmd_fetch_meta(args):
@@ -92,6 +98,42 @@ def main():
     p_opt.add_argument("--prev-ks", dest="prev_ks", type=int, nargs="*", default=[1,2,3])
     p_opt.add_argument("--decays", type=float, nargs="*", default=[0.95,0.97,0.99])
     p_opt.set_defaults(func=cmd_optimize)
+
+    def cmd_special_bt(args):
+        res = predict_special_advanced(
+            args.year, args.start, args.end,
+            window=args.window, prev_k=args.prev_k, decay=args.decay,
+            weights=json.loads(args.weights) if args.weights else None,
+            top_k=args.topk,
+        )
+        logger.info("Special backtest (top1={:.3f}, top3={:.3f}, top5={:.3f}, count={})".format(
+            res['top1'], res['top3'], res['top5'], res['count']))
+        show = [d for d in res['details'] if d['issue']>=args.show_from]
+        logger.info(json.dumps(show, ensure_ascii=False, indent=2))
+
+    p_sbt = sub.add_parser("special-backtest")
+    p_sbt.add_argument("--year", type=int, default=CURRENT_YEAR)
+    p_sbt.add_argument("--start", type=int, default=220)
+    p_sbt.add_argument("--end", type=int, default=290)
+    p_sbt.add_argument("--window", type=int, default=50)
+    p_sbt.add_argument("--prev-k", dest="prev_k", type=int, default=1)
+    p_sbt.add_argument("--decay", type=float, default=0.99)
+    p_sbt.add_argument("--weights", type=str, default="")
+    p_sbt.add_argument("--topk", type=int, default=5)
+    p_sbt.add_argument("--show-from", dest="show_from", type=int, default=280)
+    p_sbt.set_defaults(func=cmd_special_bt)
+
+    def cmd_special_opt(args):
+        res = optimize_special_grid(args.year, args.start, args.end)
+        logger.info("Best special config:\n" + json.dumps(res["config"], ensure_ascii=False, indent=2))
+        logger.info("Summary top1={:.3f}, top3={:.3f}, top5={:.3f}, count={}".format(
+            res['summary']['top1'], res['summary']['top3'], res['summary']['top5'], res['summary']['count']))
+
+    p_sopt = sub.add_parser("special-optimize")
+    p_sopt.add_argument("--year", type=int, default=CURRENT_YEAR)
+    p_sopt.add_argument("--start", type=int, default=220)
+    p_sopt.add_argument("--end", type=int, default=290)
+    p_sopt.set_defaults(func=cmd_special_opt)
 
     args = parser.parse_args()
     if not hasattr(args, "func"):

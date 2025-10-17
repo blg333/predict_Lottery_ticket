@@ -218,6 +218,222 @@ def optimize_grid(
     return {"config": best, "summary": best_summary}
 
 
+# ----------------------- Special-number advanced predictor -----------------------
+
+RED_SET = {1, 2, 7, 8, 12, 13, 18, 19, 23, 24, 29, 30, 34, 35, 40, 45, 46}
+BLUE_SET = {3, 4, 9, 10, 14, 15, 20, 25, 26, 31, 36, 37, 41, 42, 47, 48}
+GREEN_SET = {5, 6, 11, 16, 17, 21, 22, 27, 28, 32, 33, 38, 39, 43, 44, 49}
+
+
+def color_of(n: int) -> str:
+    if n in RED_SET:
+        return "red"
+    if n in BLUE_SET:
+        return "blue"
+    return "green"
+
+
+def parity_of(n: int) -> str:
+    return "even" if (n % 2 == 0) else "odd"
+
+
+def tail_of(n: int) -> int:
+    return n % 10
+
+
+def _norm_dict(d: Dict) -> Dict:
+    if not d:
+        return d
+    mx = max(d.values()) if d else 1.0
+    return {k: (v / mx if mx > 0 else 0.0) for k, v in d.items()}
+
+
+def _build_category_priors(prev_specs: List[int], decay: float = 0.97) -> Dict[str, Dict]:
+    color_cnt: Dict[str, float] = defaultdict(float)
+    parity_cnt: Dict[str, float] = defaultdict(float)
+    tail_cnt: Dict[int, float] = defaultdict(float)
+    if not prev_specs:
+        return {"color": {}, "parity": {}, "tail": {}}
+    last = len(prev_specs) - 1
+    for i, n in enumerate(prev_specs):
+        w = decay ** (last - i)
+        color_cnt[color_of(n)] += w
+        parity_cnt[parity_of(n)] += w
+        tail_cnt[tail_of(n)] += w
+    return {
+        "color": _norm_dict(color_cnt),
+        "parity": _norm_dict(parity_cnt),
+        "tail": _norm_dict(tail_cnt),
+    }
+
+
+def predict_special_advanced(
+    year: int,
+    start_issue: int,
+    end_issue: int,
+    window: int = 50,
+    prev_k: int = 1,
+    decay: float = 0.99,
+    weights: Dict[str, float] | None = None,
+    top_k: int = 1,
+) -> Dict[str, object]:
+    if weights is None:
+        weights = {"dec": 1.0, "cooc": 0.8, "trans": 0.3, "color": 0.5, "parity": 0.3, "tail": 0.3}
+    draws = load_draws(year, 1, end_issue)
+    issue_to_numbers = {iss: nums for _, iss, nums in draws}
+    issues = [iss for _, iss, _ in draws]
+    specials_series = [nums[-1] for _, _, nums in draws]
+    idx_map = {iss: i for i, iss in enumerate(issues)}
+
+    details = []
+    for iss in range(start_issue, end_issue + 1):
+        if iss not in idx_map:
+            continue
+        idx = idx_map[iss]
+        left = max(0, idx - window)
+        context = draws[left:idx]
+        prev_specs = specials_series[left:idx]
+        prev_spec = specials_series[idx - 1] if idx - 1 >= 0 else None
+        anchors = []
+        for j in range(max(0, idx - prev_k), idx):
+            anchors.extend(draws[j][2])
+
+        # component scores
+        dec_spec_scores = defaultdict(float)
+        if prev_specs:
+            last = len(prev_specs) - 1
+            tmp = defaultdict(float)
+            for i, n in enumerate(prev_specs):
+                w = decay ** (last - i)
+                tmp[n] += w
+            mx = max(tmp.values()) if tmp else 1.0
+            for n in range(1, 50):
+                dec_spec_scores[n] = tmp.get(n, 0.0) / mx
+
+        # transitions from prev_spec within context
+        trans_scores = defaultdict(float)
+        if prev_spec is not None and len(prev_specs) >= 1:
+            cnt = defaultdict(int)
+            for j in range(0, len(prev_specs) - 1):
+                a = prev_specs[j]
+                b = prev_specs[j + 1]
+                if a == prev_spec:
+                    cnt[b] += 1
+            maxt = max(cnt.values()) if cnt else 1
+            for n in range(1, 50):
+                trans_scores[n] = cnt.get(n, 0) / maxt
+
+        # co-occurrence with anchors using context full numbers
+        co_cnt = defaultdict(int)
+        for _, _, nums in context:
+            unique = sorted(set(nums))
+            for a in unique:
+                for b in unique:
+                    if a == b:
+                        continue
+                    co_cnt[(a, b)] += 1
+        co_scores = defaultdict(float)
+        if anchors:
+            sums = defaultdict(float)
+            for n in range(1, 50):
+                s = 0.0
+                for a in set(anchors):
+                    s += co_cnt.get((a, n), 0)
+                    s += co_cnt.get((n, a), 0)
+                sums[n] = s
+            mx = max(sums.values()) if sums else 1.0
+            for n in range(1, 50):
+                co_scores[n] = sums.get(n, 0.0) / mx
+
+        # category priors
+        cat_priors = _build_category_priors(prev_specs, decay=decay)
+        color_scores = {n: cat_priors["color"].get(color_of(n), 0.0) for n in range(1, 50)}
+        parity_scores = {n: cat_priors["parity"].get(parity_of(n), 0.0) for n in range(1, 50)}
+        tail_scores = {n: cat_priors["tail"].get(tail_of(n), 0.0) for n in range(1, 50)}
+
+        final = {}
+        for n in range(1, 50):
+            final[n] = (
+                weights.get("dec", 1.0) * dec_spec_scores.get(n, 0.0)
+                + weights.get("trans", 0.3) * trans_scores.get(n, 0.0)
+                + weights.get("cooc", 0.8) * co_scores.get(n, 0.0)
+                + weights.get("color", 0.5) * color_scores.get(n, 0.0)
+                + weights.get("parity", 0.3) * parity_scores.get(n, 0.0)
+                + weights.get("tail", 0.3) * tail_scores.get(n, 0.0)
+            )
+        ranked = sorted(final.items(), key=lambda kv: (-kv[1], kv[0]))
+        recos = [n for n, _ in ranked[:top_k]]
+        actual = specials_series[idx]
+        details.append({
+            "issue": iss,
+            "pred": recos[0] if recos else None,
+            "actual": actual,
+            "topk": recos,
+            "hit1": int((recos and recos[0] == actual) or False),
+            "hit3": int(actual in recos[:3]),
+            "hit5": int(actual in recos[:5]),
+        })
+
+    avg_top1 = sum(d["hit1"] for d in details) / max(len(details), 1)
+    avg_top3 = sum(d["hit3"] for d in details) / max(len(details), 1)
+    avg_top5 = sum(d["hit5"] for d in details) / max(len(details), 1)
+    summary = {
+        "range": [start_issue, end_issue],
+        "window": window,
+        "prev_k": prev_k,
+        "decay": decay,
+        "weights": weights,
+        "top1": avg_top1,
+        "top3": avg_top3,
+        "top5": avg_top5,
+        "count": len(details),
+        "details": details,
+    }
+    save_analysis_history(year, start_issue, end_issue, "special_predict_advanced", json.dumps(summary, ensure_ascii=False))
+    return summary
+
+
+def optimize_special_grid(
+    year: int,
+    start_issue: int,
+    end_issue: int,
+    windows: List[int] | None = None,
+    prev_ks: List[int] | None = None,
+    decays: List[float] | None = None,
+    weight_grid: List[Dict[str, float]] | None = None,
+) -> Dict[str, object]:
+    if windows is None:
+        windows = [40, 50, 60]
+    if prev_ks is None:
+        prev_ks = [1, 2, 3]
+    if decays is None:
+        decays = [0.95, 0.97, 0.99]
+    if weight_grid is None:
+        weight_grid = [
+            {"dec": 1.0, "cooc": 0.8, "trans": 0.3, "color": 0.5, "parity": 0.3, "tail": 0.3},
+            {"dec": 1.2, "cooc": 0.6, "trans": 0.6, "color": 0.8, "parity": 0.4, "tail": 0.4},
+            {"dec": 0.8, "cooc": 1.0, "trans": 0.8, "color": 0.8, "parity": 0.6, "tail": 0.6},
+            {"dec": 1.0, "cooc": 1.0, "trans": 1.0, "color": 0.5, "parity": 0.5, "tail": 0.5},
+        ]
+    best = None
+    best_score = -1.0
+    best_summary = None
+    for w in windows:
+        for pk in prev_ks:
+            for d in decays:
+                for wg in weight_grid:
+                    s = predict_special_advanced(year, start_issue, end_issue, window=w, prev_k=pk, decay=d, weights=wg, top_k=5)
+                    # prioritize top1, break ties with top3/top5
+                    score = s["top1"] + 0.1 * s["top3"] + 0.05 * s["top5"]
+                    if score > best_score:
+                        best_score = score
+                        best = {"window": w, "prev_k": pk, "decay": d, "weights": wg}
+                        best_summary = s
+    payload = {"best": best, "score": best_score}
+    save_analysis_history(year, start_issue, end_issue, "special_optimize_grid", json.dumps(payload, ensure_ascii=False))
+    return {"config": best, "summary": best_summary}
+
+
 def backtest_recommendations(draws: List[Tuple[int, int, List[int]]], window: int) -> Dict[str, float]:
     if len(draws) < window + 1:
         return {"issues": float(len(draws)), "avg_hits": 0.0}

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
 """
 Scraper + analysis for 新澳门六合彩 2025 issues. 
 - Crawls issues 001-290 from kj.123720c.com (year=2025), monthly pages supported
@@ -21,9 +22,17 @@ import os
 import re
 import sys
 import time
+import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
+
+try:
+    import numpy as np  # type: ignore
+except Exception:  # Fallback if numpy not installed yet
+    class _NPUnavailable:  # type: ignore
+        ndarray = None
+    np = None  # type: ignore
 
 import requests
 from bs4 import BeautifulSoup
@@ -274,6 +283,271 @@ def cmd_balance(args):
     print(f"平衡选取6个平码: {sorted(picks)}")
     print(f"平码候选Top{max(10, args.k)}(频率平衡): {ranked_all}")
 
+
+def omission_scores(records: List[IssueRecord], is_tm: bool) -> List[Tuple[int, int]]:
+    # 当前遗漏值 = 距离上次出现的期数（上期出现则为0），从最新往回
+    N = len(records)
+    ranked: List[Tuple[int, int]] = []
+    for n in range(1, 50):
+        dist = _last_occurrence_index(records, is_tm=is_tm, number=n)
+        miss = N if dist is None else max(0, dist - 1)
+        ranked.append((n, miss))
+    ranked.sort(key=lambda x: (-x[1], x[0]))
+    return ranked
+
+
+def cmd_omit(args):
+    records = read_csv(args.data)
+    last_issue = max(r.issue for r in records)
+    tm_ranked = omission_scores(records, is_tm=True)
+    pm_ranked = omission_scores(records, is_tm=False)
+    tm_pick = tm_ranked[0][0]
+    pm_picks = sorted([n for n, _ in pm_ranked[:args.k]])
+    print("遗漏值预测")
+    print(f"数据期数范围: {records[0].issue}-{records[-1].issue}，总计{len(records)}期")
+    print(f"第{last_issue+1}期特碼(遗漏)预测: {tm_pick}")
+    print(f"特碼候选Top10(遗漏): {tm_ranked[:10]}")
+    print(f"遗漏选取{args.k}个平码: {pm_picks}")
+    print(f"平码候选Top{max(10, args.k)}(遗漏): {pm_ranked[:max(10, args.k)]}")
+
+
+def compute_trend_slopes(records: List[IssueRecord], is_tm: bool, window: Optional[int] = None) -> List[Tuple[int, float]]:
+    seq = sorted(records, key=lambda x: x.issue)
+    if window is not None and window > 0:
+        seq = seq[-window:]
+    N = len(seq)
+    if N <= 1:
+        return [(n, 0.0) for n in range(1, 50)]
+    t_vals = list(range(1, N + 1))
+    t_bar = (N + 1) / 2.0
+    S_tt = sum((t - t_bar) ** 2 for t in t_vals)
+    slopes: List[Tuple[int, float]] = []
+    for n in range(1, 50):
+        y = []
+        for r in seq:
+            if is_tm:
+                y.append(1.0 if r.numbers[6] == n else 0.0)
+            else:
+                y.append(1.0 if n in r.numbers[:6] else 0.0)
+        y_bar = sum(y) / N
+        S_ty = sum((t - t_bar) * (y_i - y_bar) for t, y_i in zip(t_vals, y))
+        slope = S_ty / S_tt if S_tt > 0 else 0.0
+        slopes.append((n, slope))
+    slopes.sort(key=lambda x: (-x[1], x[0]))
+    return slopes
+
+
+def cmd_trend(args):
+    records = read_csv(args.data)
+    last_issue = max(r.issue for r in records)
+    tm_slopes = compute_trend_slopes(records, is_tm=True, window=args.window)
+    pm_slopes = compute_trend_slopes(records, is_tm=False, window=args.window)
+    tm_pick = tm_slopes[0][0]
+    pm_picks = sorted([n for n, _ in pm_slopes[:args.k]])
+    print("趋势预测")
+    print(f"使用窗口: {args.window if args.window else '全部'}；数据期数范围: {records[0].issue}-{records[-1].issue}")
+    print(f"第{last_issue+1}期特碼(趋势)预测: {tm_pick}")
+    print(f"特碼候选Top10(趋势): {tm_slopes[:10]}")
+    print(f"趋势选取{args.k}个平码: {pm_picks}")
+    print(f"平码候选Top{max(10, args.k)}(趋势): {pm_slopes[:max(10, args.k)]}")
+
+
+def pm_transition_matrix(records: List[IssueRecord]) -> Dict[int, Counter]:
+    # For each a in PM_t and b in PM_{t+1}, increment a->b
+    trans: Dict[int, Counter] = {i: Counter() for i in range(1, 50)}
+    seq = sorted(records, key=lambda x: x.issue)
+    for i in range(len(seq) - 1):
+        cur = set(seq[i].numbers[:6])
+        nxt = set(seq[i + 1].numbers[:6])
+        for a in cur:
+            for b in nxt:
+                trans[a][b] += 1
+    return trans
+
+
+def cmd_assoc(args):
+    records = read_csv(args.data)
+    last_issue = max(r.issue for r in records)
+    # TM via transition from last TM
+    tm_trans = transition_matrix(records)
+    last_tm = sorted(records, key=lambda x: x.issue)[-1].numbers[6]
+    cand_tm = tm_trans[last_tm]
+    total = sum(cand_tm.values())
+    tm_ranked = []
+    for n in range(1, 50):
+        p = (cand_tm[n] + 1) / (total + 49) if total else 1.0 / 49
+        tm_ranked.append((n, p))
+    tm_ranked.sort(key=lambda x: (-x[1], x[0]))
+    tm_pick = tm_ranked[0][0]
+    # PM via PM->PM association from last PM set
+    pm_trans = pm_transition_matrix(records)
+    last_pm = set(sorted(records, key=lambda x: x.issue)[-1].numbers[:6])
+    pm_scores: Dict[int, float] = defaultdict(float)
+    for a in last_pm:
+        row = pm_trans[a]
+        row_total = sum(row.values())
+        for b in range(1, 50):
+            pm_scores[b] += ((row[b] + 1) / (row_total + 49))
+    pm_ranked = sorted(pm_scores.items(), key=lambda x: (-x[1], x[0]))
+    pm_picks = []
+    for n, _ in pm_ranked:
+        if n not in last_pm:
+            pm_picks.append(n)
+        if len(pm_picks) >= args.k:
+            break
+    pm_picks = sorted(pm_picks)
+    print("关联性预测")
+    print(f"第{last_issue+1}期特碼(转移)预测: {tm_pick}")
+    print(f"特碼候选Top10(转移): {tm_ranked[:10]}")
+    print(f"关联选取{args.k}个平码: {pm_picks}")
+    print(f"平码候选Top{max(10, args.k)}(转移): {pm_ranked[:max(10, args.k)]}")
+
+
+def kmeans_cluster(X: List[List[float]], k: int, iters: int = 30) -> Tuple[List[int], List[List[float]]]:
+    n = len(X)
+    d = len(X[0]) if n else 0
+    k = max(1, min(k, n))
+    # init centers by picking k evenly spaced samples
+    idxs = [int(i * n / k) for i in range(k)]
+    centers = [X[i][:] for i in idxs]
+    assign = [0] * n
+    def dist2(a: List[float], b: List[float]) -> float:
+        return sum((ai - bi) * (ai - bi) for ai, bi in zip(a, b))
+    for _ in range(iters):
+        changed = False
+        for i, x in enumerate(X):
+            best_j = 0
+            best_d = dist2(x, centers[0])
+            for j in range(1, k):
+                dj = dist2(x, centers[j])
+                if dj < best_d:
+                    best_d = dj
+                    best_j = j
+            if assign[i] != best_j:
+                assign[i] = best_j
+                changed = True
+        # recompute centers
+        sums = [[0.0] * d for _ in range(k)]
+        counts = [0] * k
+        for a, x in zip(assign, X):
+            counts[a] += 1
+            for j in range(d):
+                sums[a][j] += x[j]
+        for j in range(k):
+            if counts[j] > 0:
+                centers[j] = [s / counts[j] for s in sums[j]]
+        if not changed:
+            break
+    return assign, centers
+
+
+def cmd_cluster(args):
+    records = read_csv(args.data)
+    last_issue = max(r.issue for r in records)
+    seq = sorted(records, key=lambda x: x.issue)
+    # TM clustering
+    X_tm = [[1.0 if r.numbers[6] == n else 0.0 for n in range(1, 50)] for r in seq]
+    assign_tm, _ = kmeans_cluster(X_tm, k=args.kc, iters=30)
+    last_cluster = assign_tm[-1]
+    tm_counts = Counter([seq[i].numbers[6] for i in range(len(seq)) if assign_tm[i] == last_cluster])
+    total = sum(tm_counts.values()) or 1
+    tm_ranked = sorted([(n, tm_counts[n] / total) for n in range(1, 50)], key=lambda x: (-x[1], x[0]))
+    tm_pick = tm_ranked[0][0]
+    # PM clustering
+    X_pm = [[1.0 if n in r.numbers[:6] else 0.0 for n in range(1, 50)] for r in seq]
+    assign_pm, centers_pm = kmeans_cluster(X_pm, k=args.kc, iters=30)
+    last_c_pm = assign_pm[-1]
+    center = centers_pm[last_c_pm]
+    pm_ranked = sorted([(i + 1, center[i]) for i in range(49)], key=lambda x: (-x[1], x[0]))
+    pm_picks = sorted([n for n, _ in pm_ranked[:args.k]])
+    print("聚类预测")
+    print(f"第{last_issue+1}期特碼(聚类)预测: {tm_pick}")
+    print(f"特碼候选Top10(聚类): {tm_ranked[:10]}")
+    print(f"聚类选取{args.k}个平码: {pm_picks}")
+    print(f"平码候选Top{max(10, args.k)}(聚类): {pm_ranked[:max(10, args.k)]}")
+
+
+def softmax(z):
+    z = z - np.max(z, axis=1, keepdims=True)
+    e = np.exp(z)
+    s = e / np.sum(e, axis=1, keepdims=True)
+    return s
+
+
+def build_ml_dataset(records: List[IssueRecord], window: int = 10) -> Tuple[np.ndarray, np.ndarray]:
+    seq = sorted(records, key=lambda x: x.issue)
+    window = max(1, min(window, len(seq) - 1))
+    X: List[List[float]] = []
+    y: List[int] = []
+    for i in range(window, len(seq)):
+        hist = seq[i - window:i]
+        # features: counts of TM in last W (49), one-hot last TM (49), last issue PM membership (49)
+        tm_counts = [0.0] * 49
+        for r in hist:
+            tm_counts[r.numbers[6] - 1] += 1.0
+        tm_counts = [c / window for c in tm_counts]
+        last_tm = seq[i - 1].numbers[6] - 1
+        last_tm_onehot = [0.0] * 49
+        last_tm_onehot[last_tm] = 1.0
+        last_pm = [0.0] * 49
+        for n in seq[i - 1].numbers[:6]:
+            last_pm[n - 1] = 1.0
+        feat = tm_counts + last_tm_onehot + last_pm
+        X.append(feat)
+        y.append(seq[i].numbers[6] - 1)
+    return np.array(X, dtype=float), np.array(y, dtype=int)
+
+
+def train_softmax_regression(X: np.ndarray, y: np.ndarray, lr: float = 0.5, iters: int = 300, l2: float = 1e-3) -> Tuple[np.ndarray, np.ndarray]:
+    n, d = X.shape
+    classes = 49
+    W = np.zeros((d, classes), dtype=float)
+    b = np.zeros((1, classes), dtype=float)
+    y_one = np.eye(classes)[y]
+    for _ in range(iters):
+        z = X.dot(W) + b  # (n, C)
+        p = softmax(z)
+        grad_W = X.T.dot(p - y_one) / n + l2 * W
+        grad_b = np.sum(p - y_one, axis=0, keepdims=True) / n
+        W -= lr * grad_W
+        b -= lr * grad_b
+    return W, b
+
+
+def cmd_ml(args):
+    if np is None:
+        print("需要numpy支持，请先安装: pip install numpy")
+        return
+    records = read_csv(args.data)
+    last_issue = max(r.issue for r in records)
+    X, y = build_ml_dataset(records, window=args.window)
+    if len(X) < 5:
+        print("数据不足以训练机器学习模型")
+        return
+    # Train on all but last sample; predict next from last window
+    W, b = train_softmax_regression(X, y, lr=args.lr, iters=args.iters, l2=args.l2)
+    # Build feature for next issue
+    seq = sorted(records, key=lambda x: x.issue)
+    hist = seq[-args.window:]
+    tm_counts = [0.0] * 49
+    for r in hist:
+        tm_counts[r.numbers[6] - 1] += 1.0
+    tm_counts = [c / args.window for c in tm_counts]
+    last_tm = seq[-1].numbers[6] - 1
+    last_tm_onehot = [0.0] * 49
+    last_tm_onehot[last_tm] = 1.0
+    last_pm = [0.0] * 49
+    for n in seq[-1].numbers[:6]:
+        last_pm[n - 1] = 1.0
+    x_next = np.array([tm_counts + last_tm_onehot + last_pm], dtype=float)
+    p = softmax(x_next.dot(W) + b)[0]
+    ranking = sorted([(i + 1, float(p[i])) for i in range(49)], key=lambda x: (-x[1], x[0]))
+    tm_pick = ranking[0][0]
+    print("机器学习预测（多类逻辑回归）")
+    print(f"训练样本: {len(X)}，特征维: {X.shape[1]}，窗口: {args.window}")
+    print(f"第{last_issue+1}期特碼(ML)预测: {tm_pick}")
+    print(f"特碼候选Top10(ML 概率): {[(n, round(s,4)) for n,s in ranking[:10]]}")
+
 def cmd_fetch(args):
     records = fetch_issues_2025(args.start, args.end)
     if not records or records[0].issue != args.start or records[-1].issue != args.end:
@@ -340,6 +614,36 @@ def build_arg_parser():
     pb.add_argument("--recent-tm", dest="recent_tm", type=int, default=20, help="特码近期窗口上限")
     pb.add_argument("--recent-all", dest="recent_all", type=int, default=10, help="平码近期窗口上限")
     pb.set_defaults(func=cmd_balance)
+
+    po = sub.add_parser("omit", help="遗漏值预测（特码+平码）")
+    po.add_argument("--data", type=str, default="data/macao_2025.csv")
+    po.add_argument("--k", type=int, default=6, help="输出k个平码")
+    po.set_defaults(func=cmd_omit)
+
+    pt = sub.add_parser("trend", help="趋势预测（线性趋势，特码+平码）")
+    pt.add_argument("--data", type=str, default="data/macao_2025.csv")
+    pt.add_argument("--k", type=int, default=6, help="输出k个平码")
+    pt.add_argument("--window", type=int, default=60, help="趋势窗口期数")
+    pt.set_defaults(func=cmd_trend)
+
+    pa2 = sub.add_parser("assoc", help="关联性预测（转移/共现，特码+平码）")
+    pa2.add_argument("--data", type=str, default="data/macao_2025.csv")
+    pa2.add_argument("--k", type=int, default=6, help="输出k个平码")
+    pa2.set_defaults(func=cmd_assoc)
+
+    pc = sub.add_parser("cluster", help="聚类预测（KMeans，特码+平码）")
+    pc.add_argument("--data", type=str, default="data/macao_2025.csv")
+    pc.add_argument("--k", type=int, default=6, help="输出k个平码")
+    pc.add_argument("--kc", type=int, default=4, help="聚类簇数")
+    pc.set_defaults(func=cmd_cluster)
+
+    pml = sub.add_parser("ml", help="机器学习预测（逻辑回归，特码）")
+    pml.add_argument("--data", type=str, default="data/macao_2025.csv")
+    pml.add_argument("--window", type=int, default=50, help="特征窗口")
+    pml.add_argument("--lr", type=float, default=0.5, help="学习率")
+    pml.add_argument("--iters", type=int, default=300, help="迭代轮数")
+    pml.add_argument("--l2", type=float, default=1e-3, help="L2正则")
+    pml.set_defaults(func=cmd_ml)
     return p
 
 

@@ -548,6 +548,56 @@ def cmd_ml(args):
     print(f"第{last_issue+1}期特碼(ML)预测: {tm_pick}")
     print(f"特碼候选Top10(ML 概率): {[(n, round(s,4)) for n,s in ranking[:10]]}")
 
+
+def save_ml_model(path: str, W, b) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    np.savez(path, W=W, b=b)
+
+
+def load_ml_model(path: str):
+    data = np.load(path)
+    return data['W'], data['b']
+
+
+def cmd_train_ml(args):
+    if np is None:
+        print("需要numpy支持，请先安装: pip install numpy")
+        return
+    records = read_csv(args.data)
+    X, y = build_ml_dataset(records, window=args.window)
+    if len(X) < 5:
+        print("数据不足以训练")
+        return
+    W, b = train_softmax_regression(X, y, lr=args.lr, iters=args.iters, l2=args.l2)
+    save_ml_model(args.out, W, b)
+    print(f"已训练并保存: {args.out}")
+
+
+def cmd_eval_ml(args):
+    if np is None:
+        print("需要numpy支持，请先安装: pip install numpy")
+        return
+    records = read_csv(args.data)
+    X, y = build_ml_dataset(records, window=args.window)
+    if len(X) < 10:
+        print("数据不足以评估")
+        return
+    # 简单留出法
+    n = len(X)
+    split = max(5, int(n * args.train_ratio))
+    X_train, y_train = X[:split], y[:split]
+    X_test, y_test = X[split:], y[split:]
+    W, b = train_softmax_regression(X_train, y_train, lr=args.lr, iters=args.iters, l2=args.l2)
+    from numpy import argmax
+    def softmax(z):
+        z = z - np.max(z, axis=1, keepdims=True)
+        e = np.exp(z)
+        return e / np.sum(e, axis=1, keepdims=True)
+    p = softmax(X_test.dot(W) + b)
+    pred = np.argmax(p, axis=1)
+    acc = float(np.mean((pred == y_test)))
+    print(f"评估样本: {len(X_test)}, Top1准确率: {acc:.4f}")
+
 def cmd_fetch(args):
     records = fetch_issues_2025(args.start, args.end)
     if not records or records[0].issue != args.start or records[-1].issue != args.end:
@@ -644,6 +694,24 @@ def build_arg_parser():
     pml.add_argument("--iters", type=int, default=300, help="迭代轮数")
     pml.add_argument("--l2", type=float, default=1e-3, help="L2正则")
     pml.set_defaults(func=cmd_ml)
+
+    ptm = sub.add_parser("train-ml", help="训练并保存ML模型")
+    ptm.add_argument("--data", type=str, default="data/macao_2025.csv")
+    ptm.add_argument("--window", type=int, default=50)
+    ptm.add_argument("--lr", type=float, default=0.5)
+    ptm.add_argument("--iters", type=int, default=300)
+    ptm.add_argument("--l2", type=float, default=1e-3)
+    ptm.add_argument("--out", type=str, default="model/ml_lr_tm.npz")
+    ptm.set_defaults(func=cmd_train_ml)
+
+    peml = sub.add_parser("eval-ml", help="评估ML模型（留出法）")
+    peml.add_argument("--data", type=str, default="data/macao_2025.csv")
+    peml.add_argument("--window", type=int, default=50)
+    peml.add_argument("--lr", type=float, default=0.5)
+    peml.add_argument("--iters", type=int, default=300)
+    peml.add_argument("--l2", type=float, default=1e-3)
+    peml.add_argument("--train-ratio", dest="train_ratio", type=float, default=0.7)
+    peml.set_defaults(func=cmd_eval_ml)
     return p
 
 

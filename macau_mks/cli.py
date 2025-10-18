@@ -21,6 +21,7 @@ from .models_simple import (
 from .backtest import topk_accuracy
 from .zodiac import fetch_number_to_zodiac, zodiac_follow_model
 from collections import Counter
+from .models_advanced import kmeans_clustering, ml_context_nb, arima_ar1, lstm_seq
 
 
 def main():
@@ -52,7 +53,13 @@ def main():
     except Exception:
         p_zd = [1/49.0] * 49
 
-    ens = ensemble_average([p_fb, p_om, p_tr, p_ai, p_mk, p_by, p_dm, p_zd])
+    # Advanced models (attempt; auto-fallback handled inside)
+    p_km = kmeans_clustering(records)
+    p_nb = ml_context_nb(records)
+    p_ar = arima_ar1(records)
+    p_lstm = lstm_seq(records)
+
+    ens = ensemble_average([p_fb, p_om, p_tr, p_ai, p_mk, p_by, p_dm, p_zd, p_km, p_nb, p_ar, p_lstm])
 
     # Recommend numbers per model
     def topn(p, n=10):
@@ -66,6 +73,10 @@ def main():
     logger.info(f"动态概率矩阵预测(特码): {topn(p_dm)}")
     logger.info(f"生肖转移预测(特码): {topn(p_zd)}")
     logger.info(f"贝叶斯后验预测(特码): {topn(p_by)}")
+    logger.info(f"聚类预测(特码): {topn(p_km)}")
+    logger.info(f"机器学习预测(朴素贝叶斯，特码): {topn(p_nb)}")
+    logger.info(f"AR(1)预测(特码): {topn(p_ar)}")
+    logger.info(f"LSTM预测(特码): {topn(p_lstm)}")
     logger.info(f"综合推荐(特码): {topn(ens)}")
 
     # Backtest
@@ -80,6 +91,10 @@ def main():
         acc_zd = topk_accuracy(records, lambda hist: zodiac_follow_model(hist, fetch_number_to_zodiac(2025)), k=args.topk)
     except Exception:
         acc_zd = 0.0
+    acc_km = topk_accuracy(records, kmeans_clustering, k=args.topk)
+    acc_nb = topk_accuracy(records, ml_context_nb, k=args.topk)
+    acc_ar = topk_accuracy(records, arima_ar1, k=args.topk)
+    acc_lstm = topk_accuracy(records, lstm_seq, k=args.topk)
 
     logger.info(
         {
@@ -91,6 +106,10 @@ def main():
             "acc_dynamic": acc_dm,
             "acc_zodiac": acc_zd,
             "acc_bayes": acc_by,
+            "acc_kmeans": acc_km,
+            "acc_nb": acc_nb,
+            "acc_ar1": acc_ar,
+            "acc_lstm": acc_lstm,
         }
     )
 

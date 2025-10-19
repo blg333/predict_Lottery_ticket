@@ -19,6 +19,10 @@ name_path = {
     "dlt": {
         "name": "大乐透",
         "path": "data/dlt/"
+    },
+    "lhc": {
+        "name": "六合彩",
+        "path": "data/lhc/"
     }
 }
 
@@ -86,6 +90,37 @@ model_args = {
         "path": {
             "red": model_path + "/dlt/red_ball_model/",
             "blue": model_path + "/dlt/blue_ball_model/"
+        }
+    },
+    "lhc": {
+        "model_args": {
+            "windows_size": 3,
+            "batch_size": 1,
+            "sequence_len": 6,          # 6个正码
+            "red_n_class": 49,          # 1..49
+            "red_epochs": 1,
+            "red_embedding_size": 32,
+            "red_hidden_size": 32,
+            "red_layer_size": 1,
+            "blue_n_class": 49,         # 特码同样是1..49
+            "blue_epochs": 1,
+            "blue_embedding_size": 32,
+            "blue_hidden_size": 32,
+            "blue_layer_size": 1
+        },
+        "train_args": {
+            "red_learning_rate": 0.001,
+            "red_beta1": 0.9,
+            "red_beta2": 0.999,
+            "red_epsilon": 1e-08,
+            "blue_learning_rate": 0.001,
+            "blue_beta1": 0.9,
+            "blue_beta2": 0.999,
+            "blue_epsilon": 1e-08
+        },
+        "path": {
+            "red": model_path + "/lhc/red_ball_model/",
+            "blue": model_path + "/lhc/blue_ball_model/"
         }
     }
 }

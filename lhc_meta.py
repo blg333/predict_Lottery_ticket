@@ -179,3 +179,32 @@ def get_number_zodiac(number: int, number_to_zodiac: Optional[Dict[int, str]] = 
     if number_to_zodiac is None:
         return "未知"
     return number_to_zodiac.get(int(number), "未知")
+
+
+# 家禽/野兽映射基于生肖
+DOMESTIC_ANIMALS = {"牛", "马", "羊", "鸡", "狗", "猪"}
+WILD_ANIMALS = {"鼠", "虎", "兔", "龙", "蛇", "猴"}
+
+
+def number_attributes(number: int, number_to_zodiac: Optional[Dict[int, str]] = None) -> Dict[str, str]:
+    """Return attributes for a given number in 2025 Snake year context.
+    Attributes: 波色, 单双, 大小, 家野, 头数, 尾数, 号码
+    """
+    n = int(number)
+    wave = get_wave_color(n)
+    odd_even = "单" if n % 2 else "双"
+    size = "小" if n <= 24 else "大"
+    head = str(n // 10)  # 0..4
+    tail = str(n % 10)
+    zodiac = get_number_zodiac(n, number_to_zodiac)
+    home_wild = "家禽" if zodiac in DOMESTIC_ANIMALS else ("野兽" if zodiac in WILD_ANIMALS else "未知")
+    return {
+        "号码": f"{n:02d}",
+        "波色": wave,
+        "单双": odd_even,
+        "大小": size,
+        "家野": home_wild,
+        "头数": head,
+        "尾数": tail,
+        "生肖": zodiac,
+    }

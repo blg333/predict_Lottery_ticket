@@ -48,6 +48,21 @@ python analysis_lhc.py --name lhc  # 生成统计与分布
 - 号码频率、遗漏、奇偶、大小、尾数、和值等。
 
 预测输出在 `--name lhc` 时会额外给出 特码（蓝球）的波色与生肖字段：`蓝球_波色`、`蓝球_生肖`。
+
+### 新澳门六合彩 数据爬取与策略报告
+
+已实现澳门站点爬虫（授权访问 `https://kj.123720c.com/kj/`）：
+
+```bash
+python macau_lhc_crawler.py --year 2025 --start 1 --end 291 --out data/lhc_macau/2025.csv
+
+# 生成多策略预测与报告（含热门/冷门、趋势窗口：291/120/80/50/15）
+python run_lhc_report.py --year 2025 --start 1 --end 291 --dataset data/lhc_macau/2025.csv --topk 7 --crawl
+```
+
+策略包含：
+- 频率平衡预测、遗漏值预测、趋势预测、关联性预测、聚类预测、机器学习预测。
+报告中将逐项打印各策略的预测号码与简要说明，并对“机器学习预测”给出 2025 蛇年属性（波色/单双/大小/家野/头/尾/生肖）。
 预测结果会打印在控制台
 
 ## Update

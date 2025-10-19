@@ -19,6 +19,14 @@ args = parser.parse_args()
 pred_key = {}
 
 
+def _infer_ball_counts(df):
+    """根据列名推断红球和蓝球数量"""
+    red_cols = [c for c in df.columns if str(c).startswith("红球_")]
+    # dlt存在两个蓝球列：蓝球_1、蓝球_2；ssq/lhc为单列：蓝球
+    blue_cols = [c for c in df.columns if str(c) == "蓝球" or str(c).startswith("蓝球_")]
+    return len(red_cols), len(blue_cols)
+
+
 def create_data(data, name, windows):
     """ 创建训练数据
     :param data: 数据集
@@ -34,15 +42,18 @@ def create_data(data, name, windows):
             os.mkdir(model_path)
         logger.info("训练数据已加载! ")
 
-    data = data.iloc[:, 2:].values
-    logger.info("训练集数据维度: {}".format(data.shape))
+    # 推断红/蓝数量
+    red_count, blue_count = _infer_ball_counts(data.iloc[:, 2:])
+    data_np = data.iloc[:, 2:].values
+    logger.info("训练集数据维度: {}".format(data_np.shape))
     x_data, y_data = [], []
-    for i in range(len(data) - windows - 1):
-        sub_data = data[i:(i+windows+1), :]
+    for i in range(len(data_np) - windows - 1):
+        sub_data = data_np[i:(i+windows+1), :]
         x_data.append(sub_data[1:])
         y_data.append(sub_data[0])
 
-    cut_num = 6 if name == "ssq" else 5
+    # ssq/lhc: 6红+1蓝；dlt: 5红+2蓝
+    cut_num = red_count
     return {
         "red": {
             "x_data": np.array(x_data)[:, :, :cut_num], "y_data": np.array(y_data)[:, :cut_num]
@@ -88,7 +99,7 @@ def train_with_eval_red_ball_model(name, x_train, y_train, x_test, y_test):
         red_ball_model = LstmWithCRFModel(
             batch_size=m_args["model_args"]["batch_size"],
             n_class=m_args["model_args"]["red_n_class"],
-            ball_num=m_args["model_args"]["sequence_len"] if name == "ssq" else m_args["model_args"]["red_sequence_len"],
+            ball_num=m_args["model_args"].get("sequence_len", m_args["model_args"].get("red_sequence_len")),
             w_size=m_args["model_args"]["windows_size"],
             embedding_size=m_args["model_args"]["red_embedding_size"],
             words_size=m_args["model_args"]["red_n_class"],
@@ -104,8 +115,7 @@ def train_with_eval_red_ball_model(name, x_train, y_train, x_test, y_test):
             name='Adam'
         ).minimize(red_ball_model.loss)
         sess.run(tf.compat.v1.global_variables_initializer())
-        sequence_len = m_args["model_args"]["sequence_len"] \
-            if name == "ssq" else m_args["model_args"]["red_sequence_len"]
+        sequence_len = m_args["model_args"].get("sequence_len", m_args["model_args"].get("red_sequence_len"))
         for epoch in range(m_args["model_args"]["red_epochs"]):
             for i in range(train_data_len):
                 _, loss_, pred = sess.run([
@@ -156,7 +166,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
     m_args = model_args[name]
     x_train = x_train - 1
     train_data_len = x_train.shape[0]
-    if name == "ssq":
+    if name in ("ssq", "lhc"):
         x_train = x_train.reshape(len(x_train), m_args["model_args"]["windows_size"])
         y_train = tf.keras.utils.to_categorical(y_train - 1, num_classes=m_args["model_args"]["blue_n_class"])
     else:
@@ -166,7 +176,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
 
     x_test = x_test - 1
     test_data_len = x_test.shape[0]
-    if name == "ssq":
+    if name in ("ssq", "lhc"):
         x_test = x_test.reshape(len(x_test), m_args["model_args"]["windows_size"])
         y_test = tf.keras.utils.to_categorical(y_test - 1, num_classes=m_args["model_args"]["blue_n_class"])
     else:
@@ -177,7 +187,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
     start_time = time.time()
 
     with tf.compat.v1.Session() as sess:
-        if name == "ssq":
+        if name in ("ssq", "lhc"):
             blue_ball_model = SignalLstmModel(
                 batch_size=m_args["model_args"]["batch_size"],
                 n_class=m_args["model_args"]["blue_n_class"],
@@ -207,10 +217,10 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
             name='Adam'
         ).minimize(blue_ball_model.loss)
         sess.run(tf.compat.v1.global_variables_initializer())
-        sequence_len = "" if name == "ssq" else m_args["model_args"]["blue_sequence_len"]
+        sequence_len = "" if name in ("ssq", "lhc") else m_args["model_args"]["blue_sequence_len"]
         for epoch in range(m_args["model_args"]["blue_epochs"]):
             for i in range(train_data_len):
-                if name == "ssq":
+                if name in ("ssq", "lhc"):
                     _, loss_, pred = sess.run([
                         train_step, blue_ball_model.loss, blue_ball_model.pred_label
                     ], feed_dict={
@@ -234,7 +244,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
                             epoch, loss_, y_train[i:(i + 1), :][0] + 1, pred[0] + 1)
                         )
         logger.info("训练耗时: {}".format(time.time() - start_time))
-        pred_key[ball_name[1][0]] = blue_ball_model.pred_label.name if name == "ssq" else blue_ball_model.pred_sequence.name
+        pred_key[ball_name[1][0]] = blue_ball_model.pred_label.name if name in ("ssq", "lhc") else blue_ball_model.pred_sequence.name
         if not os.path.exists(m_args["path"]["blue"]):
             os.mkdir(m_args["path"]["blue"])
         saver = tf.compat.v1.train.Saver()
@@ -243,7 +253,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
         eval_d = {}
         all_true_count = 0
         for j in range(test_data_len):
-            if name == "ssq":
+            if name in ("ssq", "lhc"):
                 true = y_test[j:(j + 1), :]
                 pred = sess.run(blue_ball_model.pred_label
                 , feed_dict={"inputs:0": x_test[j:(j + 1), :]})
@@ -263,7 +273,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
         logger.info("测试期数: {}".format(test_data_len))
         for k, v in eval_d.items():
             logger.info("命中{}个球，{}期，占比: {}%".format(k, v, round(v * 100 / test_data_len, 2)))
-        if name == "ssq":
+        if name in ("ssq", "lhc"):
             logger.info(
                 "整体准确率: {}%".format(
                     round(all_true_count * 100 / test_data_len, 2)

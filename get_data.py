@@ -10,7 +10,7 @@ from loguru import logger
 from config import os, name_path, data_file_name
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', default="ssq", type=str, help="选择爬取数据: 双色球/大乐透")
+parser.add_argument('--name', default="ssq", type=str, help="选择爬取数据: 双色球/大乐透/六合彩(lhc)")
 args = parser.parse_args()
 
 
@@ -19,7 +19,12 @@ def get_url(name):
     :param name: 玩法名称
     :return:
     """
-    url = "https://datachart.500.com/{}/history/".format(name)
+    # 站点路径名称映射
+    name_map = {
+        "lhc": "xglhc"  # 六合彩在500.com的数据图表路径为xglhc
+    }
+    site_name = name_map.get(name, name)
+    url = "https://datachart.500.com/{}/history/".format(site_name)
     path = "newinc/history.php?start={}&end="
     return url, path
 
@@ -65,6 +70,14 @@ def spider(name, start, end, mode):
                 item[u"红球_{}".format(i+1)] = tr.find_all("td")[i+1].get_text().strip()
             for j in range(2):
                 item[u"蓝球_{}".format(j+1)] = tr.find_all("td")[6+j].get_text().strip()
+            data.append(item)
+        elif name == "lhc":
+            # 六合彩：6个正码 + 1个特码，统一映射为 红球_1..6 + 蓝球
+            item[u"期数"] = tr.find_all("td")[0].get_text().strip()
+            for i in range(6):
+                item[u"红球_{}".format(i+1)] = tr.find_all("td")[i+1].get_text().strip()
+            # 特码位置通常紧随其后
+            item[u"蓝球"] = tr.find_all("td")[7].get_text().strip()
             data.append(item)
         else:
             logger.warning("抱歉，没有找到数据源！")

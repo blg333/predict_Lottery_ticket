@@ -9,6 +9,7 @@ import datetime
 import numpy as np
 import tensorflow as tf
 from config import *
+from lhc_meta import get_number_zodiac, get_wave_color
 from get_data import get_current_number, spider
 from loguru import logger
 
@@ -181,9 +182,18 @@ def run(name):
         data = spider(name, 1, current_number, "predict")
         logger.info("【{}】预测期号：{}".format(name_path[name]["name"], int(current_number) + 1))
         predict_features_ = try_error(1, name, data.iloc[:windows_size], windows_size)
-        logger.info("预测结果：{}".format(get_final_result(
-            red_graph, red_sess, blue_graph, blue_sess, pred_key_d, name, predict_features_))
+        result = get_final_result(
+            red_graph, red_sess, blue_graph, blue_sess, pred_key_d, name, predict_features_
         )
+        if name == "lhc":
+            # enrich with wave color and zodiac for 特码(蓝球)
+            special = result.get(ball_name[1][0])
+            if isinstance(special, int):
+                wave = get_wave_color(special)
+                zodiac = get_number_zodiac(special)
+                result["蓝球_波色"] = wave
+                result["蓝球_生肖"] = zodiac
+        logger.info("预测结果：{}".format(result))
     except Exception as e:
         logger.info("模型加载失败，检查模型是否训练，错误：{}".format(e))
 

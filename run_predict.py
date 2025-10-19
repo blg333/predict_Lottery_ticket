@@ -13,7 +13,7 @@ from get_data import get_current_number, spider
 from loguru import logger
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', default="ssq", type=str, help="选择训练数据: 双色球/大乐透")
+parser.add_argument('--name', default="ssq", type=str, help="选择训练数据: 双色球/大乐透/六合彩(lhc)")
 args = parser.parse_args()
 
 # 关闭eager模式
@@ -22,7 +22,7 @@ tf.compat.v1.disable_eager_execution()
 
 def load_model(name):
     """ 加载模型 """
-    if name == "ssq":
+    if name in ("ssq", "lhc"):
         red_graph = tf.compat.v1.Graph()
         with red_graph.as_default():
             red_saver = tf.compat.v1.train.import_meta_graph(
@@ -119,7 +119,7 @@ def get_red_ball_predict_result(red_graph, red_sess, pred_key_d, predict_feature
 def get_blue_ball_predict_result(blue_graph, blue_sess, pred_key_d, name, predict_features, sequence_len, windows_size):
     """ 获取蓝球预测结果
     """
-    if name == "ssq":
+    if name in ("ssq", "lhc"):
         data = predict_features[[ball_name[1][0]]].values.astype(int) - 1
         with blue_graph.as_default():
             softmax = tf.compat.v1.get_default_graph().get_tensor_by_name(pred_key_d[ball_name[1][0]])
@@ -143,7 +143,7 @@ def get_final_result(red_graph, red_sess, blue_graph, blue_sess, pred_key_d, nam
     """" 最终预测函数
     """
     m_args = model_args[name]["model_args"]
-    if name == "ssq":
+    if name in ("ssq", "lhc"):
         red_pred, red_name_list = get_red_ball_predict_result(
             red_graph, red_sess, pred_key_d,
             predict_features, m_args["sequence_len"], m_args["windows_size"]
@@ -178,7 +178,11 @@ def run(name):
     try:
         red_graph, red_sess, blue_graph, blue_sess, pred_key_d, current_number = load_model(name)
         windows_size = model_args[name]["model_args"]["windows_size"]
-        data = spider(name, 1, current_number, "predict")
+        # lhc: 使用 001-291 期作为训练期范围
+        if name == "lhc":
+            data = spider(name, 1, 291, "predict")
+        else:
+            data = spider(name, 1, current_number, "predict")
         logger.info("【{}】预测期号：{}".format(name_path[name]["name"], int(current_number) + 1))
         predict_features_ = try_error(1, name, data.iloc[:windows_size], windows_size)
         logger.info("预测结果：{}".format(get_final_result(

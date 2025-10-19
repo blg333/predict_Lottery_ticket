@@ -12,7 +12,7 @@ from modeling import LstmWithCRFModel, SignalLstmModel, tf
 from loguru import logger
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--name', default="ssq", type=str, help="选择训练数据: 双色球/大乐透")
+parser.add_argument('--name', default="ssq", type=str, help="选择训练数据: 双色球/大乐透/六合彩(lhc)")
 parser.add_argument('--train_test_split', default=0.7, type=float, help="训练集占比, 设置大于0.5")
 args = parser.parse_args()
 
@@ -42,7 +42,8 @@ def create_data(data, name, windows):
         x_data.append(sub_data[1:])
         y_data.append(sub_data[0])
 
-    cut_num = 6 if name == "ssq" else 5
+    # ssq 与 lhc 均为 6 个正码；dlt 为 5 个前区
+    cut_num = 6 if name in ("ssq", "lhc") else 5
     return {
         "red": {
             "x_data": np.array(x_data)[:, :, :cut_num], "y_data": np.array(y_data)[:, :cut_num]
@@ -88,7 +89,10 @@ def train_with_eval_red_ball_model(name, x_train, y_train, x_test, y_test):
         red_ball_model = LstmWithCRFModel(
             batch_size=m_args["model_args"]["batch_size"],
             n_class=m_args["model_args"]["red_n_class"],
-            ball_num=m_args["model_args"]["sequence_len"] if name == "ssq" else m_args["model_args"]["red_sequence_len"],
+            ball_num=(
+                m_args["model_args"]["sequence_len"]
+                if name in ("ssq", "lhc") else m_args["model_args"]["red_sequence_len"]
+            ),
             w_size=m_args["model_args"]["windows_size"],
             embedding_size=m_args["model_args"]["red_embedding_size"],
             words_size=m_args["model_args"]["red_n_class"],
@@ -104,8 +108,10 @@ def train_with_eval_red_ball_model(name, x_train, y_train, x_test, y_test):
             name='Adam'
         ).minimize(red_ball_model.loss)
         sess.run(tf.compat.v1.global_variables_initializer())
-        sequence_len = m_args["model_args"]["sequence_len"] \
-            if name == "ssq" else m_args["model_args"]["red_sequence_len"]
+        sequence_len = (
+            m_args["model_args"]["sequence_len"]
+            if name in ("ssq", "lhc") else m_args["model_args"]["red_sequence_len"]
+        )
         for epoch in range(m_args["model_args"]["red_epochs"]):
             for i in range(train_data_len):
                 _, loss_, pred = sess.run([
@@ -156,7 +162,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
     m_args = model_args[name]
     x_train = x_train - 1
     train_data_len = x_train.shape[0]
-    if name == "ssq":
+    if name in ("ssq", "lhc"):
         x_train = x_train.reshape(len(x_train), m_args["model_args"]["windows_size"])
         y_train = tf.keras.utils.to_categorical(y_train - 1, num_classes=m_args["model_args"]["blue_n_class"])
     else:
@@ -166,7 +172,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
 
     x_test = x_test - 1
     test_data_len = x_test.shape[0]
-    if name == "ssq":
+    if name in ("ssq", "lhc"):
         x_test = x_test.reshape(len(x_test), m_args["model_args"]["windows_size"])
         y_test = tf.keras.utils.to_categorical(y_test - 1, num_classes=m_args["model_args"]["blue_n_class"])
     else:
@@ -177,7 +183,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
     start_time = time.time()
 
     with tf.compat.v1.Session() as sess:
-        if name == "ssq":
+        if name in ("ssq", "lhc"):
             blue_ball_model = SignalLstmModel(
                 batch_size=m_args["model_args"]["batch_size"],
                 n_class=m_args["model_args"]["blue_n_class"],
@@ -207,10 +213,10 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
             name='Adam'
         ).minimize(blue_ball_model.loss)
         sess.run(tf.compat.v1.global_variables_initializer())
-        sequence_len = "" if name == "ssq" else m_args["model_args"]["blue_sequence_len"]
+        sequence_len = "" if name in ("ssq", "lhc") else m_args["model_args"]["blue_sequence_len"]
         for epoch in range(m_args["model_args"]["blue_epochs"]):
             for i in range(train_data_len):
-                if name == "ssq":
+                if name in ("ssq", "lhc"):
                     _, loss_, pred = sess.run([
                         train_step, blue_ball_model.loss, blue_ball_model.pred_label
                     ], feed_dict={
@@ -243,7 +249,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
         eval_d = {}
         all_true_count = 0
         for j in range(test_data_len):
-            if name == "ssq":
+            if name in ("ssq", "lhc"):
                 true = y_test[j:(j + 1), :]
                 pred = sess.run(blue_ball_model.pred_label
                 , feed_dict={"inputs:0": x_test[j:(j + 1), :]})
@@ -263,7 +269,7 @@ def train_with_eval_blue_ball_model(name, x_train, y_train, x_test, y_test):
         logger.info("测试期数: {}".format(test_data_len))
         for k, v in eval_d.items():
             logger.info("命中{}个球，{}期，占比: {}%".format(k, v, round(v * 100 / test_data_len, 2)))
-        if name == "ssq":
+        if name in ("ssq", "lhc"):
             logger.info(
                 "整体准确率: {}%".format(
                     round(all_true_count * 100 / test_data_len, 2)
